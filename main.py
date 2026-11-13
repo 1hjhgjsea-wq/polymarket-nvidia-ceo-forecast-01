@@ -25,6 +25,8 @@ VOL_EXP = 0.4        # how hard to lean on the short/long ratio
 VOL_MIN, VOL_MAX = 0.5, 2.0
 OU = 0.15            # pull toward the trailing median, in half-squares of the horizon
 TS = (0.85, 0.9, 1.0, 0.9, 0.85)
+SIG_DEFAULT = 0.0025  # hourly sigma for a market too short to estimate one
+SIG_MIN, SIG_MAX = 0.0008, 0.02
 Z = (-1.6448536269514729, -0.6744897501960817, 0.0, 0.6744897501960817, 1.6448536269514729)
 
 
@@ -41,6 +43,14 @@ def quant(vals, q):
 def rms(seg, w):
     d = [abs(seg[i] - seg[i - 1]) for i in range(max(1, len(seg) - w), len(seg))]
     return math.sqrt(sum(v * v for v in d) / len(d)) if d else 0.0
+
+
+def cross_sigma(markets):
+    """Median hourly sigma of the case's markets, for the ones too short to fit."""
+    vals = sorted(v for v in (rms(m['prices'], VOL_SHORT) for m in markets) if v > 0)
+    if not vals:
+        return SIG_DEFAULT
+    return min(SIG_MAX, max(SIG_MIN, vals[len(vals) // 2] * math.sqrt(60)))
 
 
 def grid_of(seg):
@@ -66,7 +76,7 @@ def interp(g, h):
     return g[-1][1][:]
 
 
-def forecast(prices):
+def forecast(prices, sig=SIG_DEFAULT):
     x = prices[-1]
     seg = prices[-WINDOW:] if len(prices) > WINDOW else prices
     g = grid_of(seg)
@@ -79,7 +89,7 @@ def forecast(prices):
     rows = []
     for h in range(1, H + 1):
         if len(g) < 2:
-            d = [z * 0.0025 * math.sqrt(h) for z in Z]
+            d = [z * sig * math.sqrt(h) for z in Z]
         else:
             d = [v * k for v in interp(g, h)]
             if OU:
@@ -106,7 +116,8 @@ def main():
             continue
         with open(os.path.join(ind, name), 'r', encoding='utf-8') as f:
             case = json.load(f)
-        forecasts = [{'id': m['id'], 'q': forecast(m['prices'])} for m in case['markets']]
+        sig = cross_sigma(case['markets'])
+        forecasts = [{'id': m['id'], 'q': forecast(m['prices'], sig)} for m in case['markets']]
         os.makedirs(outd, exist_ok=True)
         with open(os.path.join(outd, name[:-3] + '.out'), 'w', encoding='utf-8') as f:
             json.dump({'forecasts': forecasts}, f, separators=(',', ':'))
